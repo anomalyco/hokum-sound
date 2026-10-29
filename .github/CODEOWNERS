@@ -1,0 +1,4 @@
+# The release workflow and its locked scripts (.github/release/) hold the
+# release secrets and OIDC identity; changing them needs Dax. See
+# docs/releasing.md.
+/.github/ @thdxr

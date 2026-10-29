@@ -1,0 +1,26 @@
+[package]
+name = "hokum-sound"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "Hokum Sound: audio control for Linux on PipeWire, drawn with Rune."
+homepage = "https://github.com/anomalyco/hokum-sound"
+repository = "https://github.com/anomalyco/hokum-sound"
+
+[[bin]]
+name = "sound"
+path = "src/main.rs"
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune.git", rev = "e5a6431ccbdbee8442921a3e28e25185f2707f12" }
+rune-kit = { git = "https://github.com/anomalyco/rune.git", rev = "e5a6431ccbdbee8442921a3e28e25185f2707f12" }
+rune-theme-opencode = { git = "https://github.com/anomalyco/rune.git", rev = "e5a6431ccbdbee8442921a3e28e25185f2707f12" }
+pipewire = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+kdl = "6"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[profile.release]
+codegen-units = 16

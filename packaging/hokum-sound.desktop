@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Hokum Sound
+GenericName=Volume Control
+Comment=Adjust volume, devices and app audio
+Exec=sound
+Icon=multimedia-volume-control
+Terminal=false
+StartupNotify=true
+Categories=AudioVideo;Audio;Mixer;Settings;
+Keywords=volume;sound;audio;mixer;pipewire;pulseaudio;speakers;microphone;headphones;bluetooth;

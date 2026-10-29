@@ -1,0 +1,61 @@
+# The hokum-sound .deb and .rpm, built by scripts/package-linux.sh with nfpm
+# from a release executable, in a directory it stages with sound,
+# hokum-sound.desktop, and LICENSE. They install what the AUR package
+# hokum-sound-bin does.
+name: hokum-sound
+arch: ${HOKUM_PACKAGE_ARCH}
+platform: linux
+version: ${HOKUM_PACKAGE_VERSION}
+version_schema: none
+release: "1"
+section: sound
+priority: optional
+maintainer: Anomaly <hokum@anoma.ly>
+vendor: Anomaly
+homepage: https://github.com/anomalyco/hokum-sound
+license: MIT
+description: |-
+  Hokum Sound: audio control for Linux on PipeWire.
+  Volume, devices, Bluetooth profiles and per-app audio, in one small window.
+contents:
+  - src: sound
+    dst: /usr/bin/sound
+    file_info:
+      mode: 0755
+  - src: hokum-sound.desktop
+    dst: /usr/share/applications/hokum-sound.desktop
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/licenses/hokum-sound/LICENSE
+    file_info:
+      mode: 0644
+overrides:
+  # Linked: glibc, libgcc_s, libpipewire-0.3. Loaded at run time: the Vulkan
+  # loader, the Wayland client library and xkbcommon. PipeWire itself (the
+  # daemon and a session manager) is what the app controls.
+  deb:
+    depends:
+      - libc6 (>= 2.39)
+      - libgcc-s1
+      - libpipewire-0.3-0t64 | libpipewire-0.3-0
+      - libxkbcommon0
+      - libvulkan1
+      - libwayland-client0
+    recommends:
+      - mesa-vulkan-drivers
+      - pipewire
+      - wireplumber
+  # Library names, so Fedora and openSUSE resolve them to their own packages.
+  rpm:
+    depends:
+      - libpipewire-0.3.so.0()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libvulkan.so.1()(64bit)
+      - libwayland-client.so.0()(64bit)
+    recommends:
+      - pipewire
+      - wireplumber
+rpm:
+  group: Applications/Multimedia
+  summary: Hokum Sound audio control by Anomaly

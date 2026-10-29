@@ -1,0 +1,40 @@
+# Maintainer: dax
+#
+# Generated from anomalyco/hokum-sound packaging/aur by scripts/release-aur.sh,
+# which sets pkgver, the release service's linux-x64 and linux-arm64 file
+# URLs, and the checksums for each release.
+pkgname=hokum-sound-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Hokum Sound: audio control for Linux on PipeWire'
+arch=('x86_64' 'aarch64')
+url='https://github.com/anomalyco/hokum-sound'
+license=('MIT')
+provides=('hokum-sound')
+conflicts=('hokum-sound')
+# Linked: glibc, libgcc, libpipewire. Loaded at run time (so namcap calls them
+# unneeded): the Vulkan loader and a driver, the Wayland client library and
+# xkbcommon.
+depends=('glibc' 'libgcc' 'libpipewire' 'libxkbcommon' 'vulkan-driver' 'vulkan-icd-loader' 'wayland')
+optdepends=('pipewire-pulse: for apps that speak PulseAudio'
+            'wireplumber: the session manager that keeps defaults and profiles')
+options=('!strip' '!debug')
+install=hokum-sound-bin.install
+source=(
+  'hokum-sound.desktop'
+  'LICENSE'
+)
+source_x86_64=("hokum-sound-${pkgver}-linux-x64::@URL_X64@")
+source_aarch64=("hokum-sound-${pkgver}-linux-arm64::@URL_ARM64@")
+sha256sums=('@DESKTOP_SHA256@'
+            '@LICENSE_SHA256@')
+sha256sums_x86_64=('@SHA256_X64@')
+sha256sums_aarch64=('@SHA256_ARM64@')
+
+package() {
+  local target=x64
+  [ "$CARCH" = aarch64 ] && target=arm64
+  install -Dm755 "hokum-sound-${pkgver}-linux-${target}" "$pkgdir/usr/bin/sound"
+  install -Dm644 hokum-sound.desktop "$pkgdir/usr/share/applications/hokum-sound.desktop"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

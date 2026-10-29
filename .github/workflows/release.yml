@@ -1,0 +1,384 @@
+name: Release
+
+# Builds and publishes Hokum Sound for Linux x86_64 and aarch64 from one exact
+# commit to the Anomaly release service (anomalyco/release, docs/releasing.md),
+# split the way Hex's and OpenCode's releases are:
+#
+# - build jobs (linux-x64, linux-arm64, aur-stage) run repository code:
+#   cargo, the build scripts, nfpm, makepkg. They have no environment, no
+#   secrets, and no id-token, and they produce unsigned files.
+# - publish jobs run in the release environment (or, for the tag, with
+#   contents: write). They check out only .github/release/ and run only those
+#   scripts and SHA-pinned actions, on artifacts they treat as data: they
+#   never build, install dependencies, or execute repository code or the
+#   artifacts.
+# - every artifact carries a SHA256SUMS whose digest the job that made it
+#   reports as an output; every job that downloads it checks that digest
+#   (.github/release/verify-artifacts.sh), so nothing swapped in between jobs
+#   is published.
+#
+# This file and .github/release/ are the security boundary for releases, and
+# a ruleset lets only Dax change .github/ (docs/releasing.md).
+#
+# There is one environment, release: no approval, deployment policy dev and
+# production. The service authorizes the publish jobs by their OIDC token:
+# anomalyco/hokum-sound, this file, environment release, artifact sound of
+# app hokum, the dev channel from dev and stable from production
+# (anomalyco/release registry/hokum.json).
+#
+# Channels (.github/release/plan.sh):
+# - dev: every push to dev (except docs- or Markdown-only) publishes
+#   0.0.0-dev-<run number> on the dev channel; a running release finishes
+#   and only the newest push waits behind it (the ones between are skipped).
+# - check: a dispatch from dev builds and tests the same and publishes
+#   nothing; its last job pushes and deletes a throwaway v0.0.0-test-<run>
+#   tag to prove it can tag.
+# - stable: a dispatch from production publishes the crate version, then the
+#   AUR. Tags trigger nothing: only after the release service published does
+#   the github job tag v<version> on the released commit and create the
+#   GitHub release, so a failed run leaves no tag.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, tag, or branch to release
+        required: true
+        default: production
+      channel:
+        description: check (build and test; publish nothing), dev (the dev channel; run from dev), or stable (public; run from production)
+        type: choice
+        options: [check, dev, stable]
+        default: check
+  push:
+    branches: [dev]
+    # Docs alone cut no dev build.
+    paths-ignore: ["docs/**", "**/*.md", "site/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'dev' }}
+  # Releases never cancel each other: the running one finishes, and of the
+  # pushes that land meanwhile only the newest waits (GitHub replaces an
+  # older pending run in the group), so a busy dev branch still publishes.
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+      channel: ${{ steps.plan.outputs.channel }}
+      service: ${{ steps.plan.outputs.service }}
+      tag: ${{ steps.plan.outputs.tag }}
+      notes-url: ${{ steps.plan.outputs.notes-url }}
+      release-channel: ${{ steps.plan.outputs.release-channel }}
+      release-version: ${{ steps.plan.outputs.release-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+          sparse-checkout: |
+            /.github/release/
+            /Cargo.toml
+            /docs/releases/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - id: plan
+        run: SHA=$(git rev-parse HEAD) bash .github/release/plan.sh
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || '' }}
+          CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'dev' }}
+          GH_TOKEN: ${{ github.token }}
+
+  # ---- Build: repository code; no environment, secrets, or id-token ----------
+
+  # Both architectures build natively on Ubuntu 24.04, so the executable and
+  # packages need glibc 2.39 (Ubuntu 24.04, Debian 13, Fedora 40, Arch) rather
+  # than a rolling distribution's newest. Hokum Sound links glibc, libgcc_s
+  # and libpipewire-0.3 (bindgen needs clang and the PipeWire headers) and
+  # loads Vulkan, Wayland and xkbcommon at run time. Mesa's lavapipe gives the
+  # headless smoke render in scripts/build-linux.sh a Vulkan device.
+  linux-x64:
+    name: Linux x86_64
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      HOKUM_VERSION: ${{ needs.plan.outputs.release-version }}
+      HOKUM_LINUX_ARCH: x86_64
+      HOKUM_LINUX_LABEL: x64
+      NFPM_ARCHIVE: nfpm_2.48.0_Linux_x86_64.tar.gz
+      NFPM_SHA256: 6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750
+    outputs:
+      digest: ${{ steps.upload.outputs.digest }}
+    steps: &linux-steps
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y file jq pkg-config clang libclang-dev libpipewire-0.3-dev libspa-0.2-dev libxkbcommon-dev libvulkan1 mesa-vulkan-drivers
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/nfpm.tar.gz" \
+            "https://github.com/goreleaser/nfpm/releases/download/v2.48.0/$NFPM_ARCHIVE"
+          echo "$NFPM_SHA256  $RUNNER_TEMP/nfpm.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/nfpm.tar.gz" -C "$RUNNER_TEMP/bin" nfpm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build
+        env:
+          HOKUM_RELEASE_DIST: ${{ runner.temp }}/dist
+          CARGO_BUILD_JOBS: 4
+        run: |
+          executable=$(scripts/build-linux.sh)
+          test "$executable" = "$HOKUM_RELEASE_DIST/hokum-sound-$HOKUM_VERSION-linux-$HOKUM_LINUX_LABEL"
+          scripts/package-linux.sh "$executable" "$HOKUM_VERSION" "$HOKUM_LINUX_LABEL" "$HOKUM_RELEASE_DIST"
+      - name: Install the .deb here and the .rpm on Fedora
+        run: |
+          base="$RUNNER_TEMP/dist/hokum-sound-$HOKUM_VERSION-linux-$HOKUM_LINUX_LABEL"
+          dpkg-deb --info "$base.deb"
+          sudo apt-get install -y "$base.deb"
+          test "$(/usr/bin/sound --version)" = "sound $HOKUM_VERSION"
+          dpkg-query -S /usr/bin/sound /usr/share/applications/hokum-sound.desktop
+          sudo apt-get remove -y hokum-sound
+          docker run --rm -v "$RUNNER_TEMP/dist:/dist:ro" -e HOKUM_VERSION -e HOKUM_LINUX_LABEL fedora:42 sh -euc '
+            dnf install -y -q "/dist/hokum-sound-$HOKUM_VERSION-linux-$HOKUM_LINUX_LABEL.rpm"
+            test "$(sound --version)" = "sound $HOKUM_VERSION"
+            rpm -qf /usr/bin/sound /usr/share/applications/hokum-sound.desktop'
+      - name: Report the glibc floor
+        run: |
+          floor=$(objdump -T "$RUNNER_TEMP/dist/hokum-sound-$HOKUM_VERSION-linux-$HOKUM_LINUX_LABEL" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "Linux $HOKUM_LINUX_LABEL artifact requires $floor." | tee -a "$GITHUB_STEP_SUMMARY"
+      - id: upload
+        uses: ./.github/release/upload
+        with:
+          name: build-linux-${{ env.HOKUM_LINUX_ARCH }}
+          path: ${{ runner.temp }}/dist
+
+  linux-arm64:
+    name: Linux aarch64
+    needs: plan
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      HOKUM_VERSION: ${{ needs.plan.outputs.release-version }}
+      HOKUM_LINUX_ARCH: aarch64
+      HOKUM_LINUX_LABEL: arm64
+      NFPM_ARCHIVE: nfpm_2.48.0_Linux_arm64.tar.gz
+      NFPM_SHA256: a9a75213763783b7669719e505474c748c5ad7dc66591a195619deb50f85c2f4
+    outputs:
+      digest: ${{ steps.upload.outputs.digest }}
+    steps: *linux-steps
+
+  # ---- Publish: release environment; only .github/release/ is checked out ----
+
+  # The only job that publishes to the release service; its OIDC token is the
+  # credential.
+  publish:
+    needs: [plan, linux-x64, linux-arm64]
+    if: needs.plan.outputs.channel != 'check'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env: &publish-env
+      RELEASE: ${{ needs.plan.outputs.service }}
+      HOKUM_VERSION: ${{ needs.plan.outputs.release-version }}
+      HOKUM_RELEASE_CHANNEL: ${{ needs.plan.outputs.release-channel }}
+    outputs:
+      linux-x64-url: ${{ steps.publish.outputs.linux-x64-url }}
+      linux-arm64-url: ${{ steps.publish.outputs.linux-arm64-url }}
+    steps:
+      - &checkout-release
+        name: Check out the release scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          sparse-checkout: /.github/release/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Download
+        uses: ./.github/release/download
+        with:
+          pattern: build-linux-*
+          digests: >-
+            build-linux-x86_64=${{ needs.linux-x64.outputs.digest }}
+            build-linux-aarch64=${{ needs.linux-arm64.outputs.digest }}
+      - name: Gather the release files
+        run: bash .github/release/assemble.sh "$RUNNER_TEMP/in" "$RUNNER_TEMP/dist"
+      - id: publish
+        name: Publish
+        env:
+          NOTES_URL: ${{ needs.plan.outputs.notes-url }}
+        run: |
+          bash .github/release/release-service.sh publish "$RUNNER_TEMP/dist" "$NOTES_URL"
+          for target in linux-x64 linux-arm64; do
+            echo "$target-url=${RELEASE%/release}$(jq -r --arg target "$target" '.release.targets[$target].url' "$RUNNER_TEMP/dist/manifest.json")" >> "$GITHUB_OUTPUT"
+          done
+          { echo '### Manifest'; echo '```json'; cat "$RUNNER_TEMP/dist/manifest.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Record the Linux packages
+        # The .deb and .rpm are files of this release, so they serve the
+        # version now.
+        if: needs.plan.outputs.channel == 'stable'
+        run: |
+          for kind in deb-x64 deb-arm64 rpm-x64 rpm-arm64; do
+            bash .github/release/release-service.sh distribution "$kind" "$HOKUM_VERSION"
+          done
+
+  # Last, once the release service published: tags v<version> on the released
+  # commit and mirrors the files to its GitHub release, with the built-in
+  # token; a failed run leaves no tag. Tags trigger nothing. A check run
+  # pushes and deletes a throwaway v0.0.0-test-<run> tag to prove the token
+  # can tag.
+  github:
+    name: Tag and GitHub release
+    needs: [plan, linux-x64, linux-arm64, publish]
+    if: >-
+      ${{ !cancelled() && (
+        (needs.plan.outputs.channel == 'stable' && needs.publish.result == 'success')
+        || (needs.plan.outputs.channel == 'check'
+            && needs.linux-x64.result == 'success' && needs.linux-arm64.result == 'success') ) }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      SHA: ${{ needs.plan.outputs.sha }}
+      HOKUM_VERSION: ${{ needs.plan.outputs.release-version }}
+      HOKUM_RELEASE_COMMIT: ${{ needs.plan.outputs.sha }}
+      HOKUM_RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      # Credentials stay so the job can push the tag; it runs no repository
+      # code beyond .github/release/.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          sparse-checkout: |
+            /.github/release/
+            /docs/releases/
+          sparse-checkout-cone-mode: false
+      - name: Tag
+        env:
+          HOKUM_RELEASE_TAG_TEST: ${{ needs.plan.outputs.channel == 'check' && '1' || '' }}
+        run: bash .github/release/tag-release.sh
+      - name: Download
+        if: needs.plan.outputs.channel == 'stable'
+        uses: ./.github/release/download
+        with:
+          pattern: build-linux-*
+          digests: >-
+            build-linux-x86_64=${{ needs.linux-x64.outputs.digest }}
+            build-linux-aarch64=${{ needs.linux-arm64.outputs.digest }}
+      - name: Gather the release files
+        if: needs.plan.outputs.channel == 'stable'
+        run: bash .github/release/assemble.sh "$RUNNER_TEMP/in" "$RUNNER_TEMP/dist"
+      - name: GitHub release
+        if: needs.plan.outputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOKUM_RELEASE_NOTES: docs/releases/${{ needs.plan.outputs.version }}.md
+        run: bash .github/release/publish-github-release.sh "$RUNNER_TEMP/dist"
+
+  # Builds and installs hokum-sound-bin from the published files in an Arch
+  # container and renders with the installed executable, without secrets.
+  aur-stage:
+    name: AUR package
+    needs: [plan, linux-x64, linux-arm64, publish]
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.plan.outputs.channel == 'stable' }}
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    env:
+      HOKUM_VERSION: ${{ needs.plan.outputs.release-version }}
+      LINUX_X64_URL: ${{ needs.publish.outputs.linux-x64-url }}
+      LINUX_ARM64_URL: ${{ needs.publish.outputs.linux-arm64-url }}
+    outputs:
+      digest: ${{ steps.upload.outputs.digest }}
+    steps:
+      - name: Install tools
+        run: |
+          pacman -Syu --noconfirm --needed git file vulkan-swrast namcap libpipewire
+          useradd --create-home builder
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: ./.github/release/download
+        with:
+          pattern: build-linux-*
+          digests: >-
+            build-linux-x86_64=${{ needs.linux-x64.outputs.digest }}
+            build-linux-aarch64=${{ needs.linux-arm64.outputs.digest }}
+      - name: Stage and test hokum-sound-bin
+        run: |
+          x64="$RUNNER_TEMP/in/build-linux-x86_64/hokum-sound-$HOKUM_VERSION-linux-x64"
+          arm64="$RUNNER_TEMP/in/build-linux-aarch64/hokum-sound-$HOKUM_VERSION-linux-arm64"
+          # makepkg refuses root, so builder stages and builds in its own home from
+          # copies; the runner's files in the workspace and RUNNER_TEMP keep their owner.
+          src=/home/builder/src
+          stage=/home/builder/aur
+          mkdir "$src"
+          cp -R scripts packaging LICENSE "$x64" "$arm64" "$src/"
+          chown -R builder: "$src"
+          runuser -u builder -- "$src/scripts/release-aur.sh" stage "$HOKUM_VERSION" \
+            "$src/${x64##*/}" "$LINUX_X64_URL" "$src/${arm64##*/}" "$LINUX_ARM64_URL" "$stage"
+          built=$(runuser -u builder -- "$src/scripts/release-aur.sh" test "$stage")
+          namcap "$stage/PKGBUILD" "$built" | tee -a "$GITHUB_STEP_SUMMARY"
+          pacman -U --noconfirm "$built"
+          test "$(sound --version)" = "sound $HOKUM_VERSION"
+          sound --snap "$RUNNER_TEMP/snap.png" --scene mock
+          file "$RUNNER_TEMP/snap.png" | grep -q 'PNG image data'
+          # The PKGBUILD's sources are the published files.
+          curl -fsS "$LINUX_X64_URL" | cmp - "$x64"
+          curl -fsS "$LINUX_ARM64_URL" | cmp - "$arm64"
+          mkdir -p "$RUNNER_TEMP/aur-out"
+          (cd "$stage" && cp PKGBUILD .SRCINFO hokum-sound.desktop LICENSE hokum-sound-bin.install "$RUNNER_TEMP/aur-out/")
+          { echo '### AUR PKGBUILD'; echo '```'; cat "$stage/PKGBUILD"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - id: upload
+        uses: ./.github/release/upload
+        with:
+          name: build-aur
+          path: ${{ runner.temp }}/aur-out
+
+  aur:
+    name: AUR
+    needs: [plan, aur-stage]
+    if: ${{ !cancelled() && needs.aur-stage.result == 'success' }}
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - *checkout-release
+      - uses: ./.github/release/download
+        with:
+          pattern: build-aur
+          digests: build-aur=${{ needs.aur-stage.outputs.digest }}
+      - name: Push to the AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: bash .github/release/push-aur.sh "$RUNNER_TEMP/in/build-aur"
+
+  # Tells AUR installs about the version only once the AUR serves it.
+  record-aur:
+    needs: [plan, aur]
+    if: ${{ !cancelled() && needs.aur.result == 'success' }}
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env: *publish-env
+    steps:
+      - *checkout-release
+      - run: bash .github/release/release-service.sh distribution aur "$HOKUM_VERSION"
