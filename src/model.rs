@@ -568,6 +568,12 @@ impl Driver {
     pub fn commands(&self) -> &Receiver<Command> {
         &self.commands
     }
+
+    /// Takes the command receiver, for backends that wait on commands on another thread (and
+    /// forward them into their own event loop). `commands()` is empty afterwards.
+    pub fn take_commands(&mut self) -> Receiver<Command> {
+        std::mem::replace(&mut self.commands, mpsc::channel().1)
+    }
 }
 
 /// A connected pair: give [`Audio`] to the UI and [`Driver`] to the backend's thread.
