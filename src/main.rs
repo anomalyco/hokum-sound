@@ -51,6 +51,8 @@ fn main() {
     match argv.first().map(String::as_str) {
         Some("check") => std::process::exit(if config::check() { 0 } else { 1 }),
         Some("update") => std::process::exit(update::cli(&argv)),
+        // The backend without the window (src/audio/debug.rs); not in --help.
+        Some("debug") => std::process::exit(audio::debug::cli(&argv[1..])),
         _ => {}
     }
     let service = argv.first().is_some_and(|a| a == "service");
