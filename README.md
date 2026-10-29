@@ -6,6 +6,7 @@ per-app audio on PipeWire, in one small window. One of the Hokum tools.
 ```sh
 sound                 # open the window
 sound --mock          # the window on fake devices (no PipeWire)
+sound service         # a tray icon; a click opens the popover
 sound check           # problems in ~/.config/hokum-sound/config.kdl
 sound update          # check for a new build
 ```
