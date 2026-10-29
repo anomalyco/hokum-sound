@@ -3,7 +3,7 @@
 //! ```sh
 //! sound                        # open the window
 //! sound --mock                 # the window on fake devices and apps (no PipeWire)
-//! sound service                # stay running in the background (tray, hotkeys; later)
+//! sound service                # stay running in the background: a tray icon and its popover
 //! sound check                  # report problems in config.kdl
 //! sound update [--install]     # check for a new build now (and install it)
 //! sound --version
@@ -28,7 +28,8 @@ const HELP: &str = "usage: sound [service | check | update] [--mock] [--version]
   sound                  open the window
     --mock               use fake devices and apps instead of PipeWire
                          (or HOKUM_SOUND_BACKEND=mock)
-  sound service          stay running in the background (tray and hotkeys; not yet)
+  sound service          stay running with a tray icon; a click opens a popover
+    --mock               on fake devices
   sound check            print problems in ~/.config/hokum-sound/config.kdl;
                          exits non-zero if there are any
   sound update           check for a new build on this build's channel now
@@ -50,22 +51,20 @@ fn main() {
     match argv.first().map(String::as_str) {
         Some("check") => std::process::exit(if config::check() { 0 } else { 1 }),
         Some("update") => std::process::exit(update::cli(&argv)),
-        Some("service") => {
-            eprintln!("sound: the background service is not implemented yet");
-            std::process::exit(1);
-        }
         _ => {}
     }
+    let service = argv.first().is_some_and(|a| a == "service");
     let headless = argv.iter().any(|a| {
         matches!(a.as_str(), "--snap" | "--tree" | "--trace" | "--frames" | "--strip" | "--list-scenes" | "--first-pixels")
     });
     if headless {
-        rune::App::new(ui::spec()).run();
+        ui::headless();
         return;
     }
     let mock = argv.iter().any(|a| a == "--mock") || std::env::var("HOKUM_SOUND_BACKEND").is_ok_and(|b| b == "mock");
     let source = if mock { model::Source::Mock } else { model::Source::PipeWire };
     match model::start(source) {
+        Ok(audio) if service => ui::tray::service(audio),
         Ok(audio) => ui::run(audio),
         Err(e) => {
             eprintln!("sound: {e}");

@@ -36,8 +36,10 @@ binary name, config in `~/.config/hokum-<tool>/`.
 - `src/audio/` — the PipeWire backend (`audio::start() -> Audio`).
 - `src/mock.rs` — fake devices and apps with animated levels; `--mock` and
   every headless scene.
-- `src/ui/` — the Rune window; keep the `mock` scene (the release smoke test
-  renders it).
+- `src/ui/` — the Rune window and tray popover: `view.rs` (levels 1–2),
+  `advanced.rs` (level 3), `slider.rs`, `tray.rs` (`sound service`). Scenes:
+  `main`, `expanded`, `input`, `advanced`, `routing`, `clock`, `tray`, `issue`,
+  `lost`; keep `mock` (the release smoke test renders it).
 - `src/update.rs` — the release check-in (`hokum/<channel>/<version>/sound`).
 - `src/config.rs` — `~/.config/hokum-sound/config.kdl`.
 - Releases: docs/releasing.md. `.github/` needs Dax.
